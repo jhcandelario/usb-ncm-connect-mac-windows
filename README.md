@@ -41,7 +41,8 @@ kernel-driver signing path before it can work on Secure-Boot-enabled Windows.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design,
 [patches/SOURCE-CHANGES.md](patches/SOURCE-CHANGES.md) for the reviewable
 change inventory, and [docs/TEST-EVIDENCE.md](docs/TEST-EVIDENCE.md) for the
-recorded tests.
+recorded tests. The pinned upstream source build has also been reproduced;
+see [docs/BUILD-VALIDATION.md](docs/BUILD-VALIDATION.md).
 
 ## Boundaries
 
