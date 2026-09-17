@@ -1,0 +1,14 @@
+# Driver build output and signing material
+Build/
+Debug/
+Release/
+x64/
+*.sys
+*.cat
+*.cer
+*.pfx
+*.pdb
+
+# Local build tooling
+.vs/
+*.user
