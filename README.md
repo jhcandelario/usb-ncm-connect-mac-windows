@@ -51,10 +51,11 @@ The physical USB link must already negotiate SuperSpeedPlus for 10 Gb/s-class
 performance. Do not use test-signed packages on a system that requires Secure
 Boot.
 
-The next milestone is a separate, reviewed Windows/macOS setup guide. Until
-then, this repository intentionally does not provide one-click installation
-instructions or release binaries. We would rather be clear about what is known
-than make an experimental driver look effortless.
+The connection and test steps are available in [docs/SETUP.md](docs/SETUP.md).
+They begin after a proper driver package is installed; this repository still
+intentionally provides neither one-click installation nor release binaries. We
+would rather be clear about what is known than make an experimental driver look
+effortless.
 
 ## Upstream and license
 
