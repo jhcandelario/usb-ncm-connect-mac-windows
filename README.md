@@ -1,6 +1,8 @@
 # Apple Mac USB NCM compatibility patch for Windows
 
-An experimental, source-first compatibility patch for connecting an Apple
+If you landed here because a Mac and a Windows PC are connected by USB-C but
+Windows only gives you a mysterious Code 10, you are in the right place. This
+is an experimental, source-first compatibility patch for connecting an Apple
 Silicon Mac directly to Windows over the Mac's USB-C NCM device
 (`USB\\VID_05AC&PID_1902`).
 
@@ -51,7 +53,8 @@ Boot.
 
 The next milestone is a separate, reviewed Windows/macOS setup guide. Until
 then, this repository intentionally does not provide one-click installation
-instructions or release binaries.
+instructions or release binaries. We would rather be clear about what is known
+than make an experimental driver look effortless.
 
 ## Upstream and license
 

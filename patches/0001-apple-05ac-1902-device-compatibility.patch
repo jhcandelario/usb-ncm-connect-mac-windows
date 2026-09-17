@@ -1,0 +1,233 @@
+diff --git a/host/device.cpp b/host/device.cpp
+index bdff301..f923591 100644
+--- a/host/device.cpp
++++ b/host/device.cpp
+@@ -7,6 +7,9 @@
+ #define MAX_HOST_MTU_SIZE               (9014)
+ #define MAX_HOST_TX_NTB_DATAGRAM_COUNT  (UINT16) (16)
+ #define PENDING_BULK_IN_READS           (8)
++#define APPLE_VENDOR_ID                 (0x05AC)
++#define APPLE_NCM_1902_PRODUCT_ID       (0x1902)
++#define APPLE_NCM_LINK_SPEED_BPS        (10000000000ULL)
+ 
+ const USBNCM_DEVICE_EVENT_CALLBACKS UsbNcmHostDevice::s_NcmDeviceCallbacks =
+ {
+@@ -165,6 +168,12 @@ UsbNcmHostDevice::InitializeDevice(
+             &m_WdfUsbTargetDevice),
+         "WdfUsbTargetDeviceCreateWithParameters failed");
+ 
++    USB_DEVICE_DESCRIPTOR deviceDescriptor;
++    WdfUsbTargetDeviceGetDeviceDescriptor(m_WdfUsbTargetDevice, &deviceDescriptor);
++    m_IsAppleNcm1902 =
++        (deviceDescriptor.idVendor == APPLE_VENDOR_ID) &&
++        (deviceDescriptor.idProduct == APPLE_NCM_1902_PRODUCT_ID);
++
+     // Ignore any error if we failed to set PnP FriendlyName
+     (void) SetDeviceFriendlyName();
+ 
+@@ -187,9 +196,11 @@ UsbNcmHostDevice::InitializeDevice(
+ 
+     NCM_RETURN_IF_NOT_NT_SUCCESS(RetrieveDataBulkPipes());
+ 
+-    // If we didn't find all the 3 pipes, fail the start.
++    // Apple Silicon Macs intentionally omit the CDC notification endpoint on
++    // 05AC:1902. All other NCM devices must expose the standard three pipes.
+     NCM_RETURN_NT_STATUS_IF_FALSE_MSG(
+-        m_ControlInterruptPipe && m_DataBulkInPipe && m_DataBulkOutPipe,
++        (m_IsAppleNcm1902 || m_ControlInterruptPipe) &&
++            m_DataBulkInPipe && m_DataBulkOutPipe,
+         STATUS_DEVICE_HARDWARE_ERROR,
+         "Bad NCM pipes incomplete");
+ 
+@@ -343,6 +354,8 @@ UsbNcmHostDevice::SelectConfiguration(
+     BYTE dataInterfaceNumber = 0;
+     PUSB_NCM_CS_FUNCTIONAL_DESCRIPTOR pNcmFunctionalDescr = nullptr;
+     PUSB_ECM_CS_NET_FUNCTIONAL_DESCRIPTOR pEcmFunctionalDescr = nullptr;
++    BOOLEAN appleControlFound = FALSE;
++    BOOLEAN appleDataFound = FALSE;
+ 
+     size_t currDescrptorOffset = 0;
+     PUSB_COMMON_DESCRIPTOR pCurrDescriptor = (PUSB_COMMON_DESCRIPTOR)pDescriptors;
+@@ -364,11 +377,19 @@ UsbNcmHostDevice::SelectConfiguration(
+                     (pIfDescriptor->bInterfaceSubClass == USB_CDC_INTERFACE_SUBCLASS_NCM))
+                 {
+                     NCM_RETURN_NT_STATUS_IF_FALSE_MSG(
+-                        pIfDescriptor->bNumEndpoints == 1,
++                        (pIfDescriptor->bNumEndpoints == 1) ||
++                            (m_IsAppleNcm1902 && pIfDescriptor->bNumEndpoints == 0),
+                         STATUS_DEVICE_HARDWARE_ERROR,
+                         "Bad UsbInterfaceDescriptor");
+ 
+-                    controlInterfaceNumber = pIfDescriptor->bInterfaceNumber;
++                    // The Mac reports two NCM functions without IADs. Select
++                    // the first complete function rather than overwriting it
++                    // with the second while scanning the configuration.
++                    if (!m_IsAppleNcm1902 || !appleControlFound)
++                    {
++                        controlInterfaceNumber = pIfDescriptor->bInterfaceNumber;
++                        appleControlFound = TRUE;
++                    }
+                 }
+                 else if ((pIfDescriptor->bInterfaceClass == USB_CDC_INTERFACE_CLASS_DATA) &&
+                          (pIfDescriptor->bInterfaceProtocol == USB_DATA_INTERFACE_PROTOCOL_NCM) &&
+@@ -379,7 +400,11 @@ UsbNcmHostDevice::SelectConfiguration(
+                         STATUS_DEVICE_HARDWARE_ERROR,
+                         "Bad UsbInterfaceDescriptor");
+ 
+-                    dataInterfaceNumber = pIfDescriptor->bInterfaceNumber;
++                    if (!m_IsAppleNcm1902 || !appleDataFound)
++                    {
++                        dataInterfaceNumber = pIfDescriptor->bInterfaceNumber;
++                        appleDataFound = TRUE;
++                    }
+                 }
+ 
+                 break;
+@@ -405,7 +430,10 @@ UsbNcmHostDevice::SelectConfiguration(
+                             STATUS_DEVICE_HARDWARE_ERROR,
+                             "Bad UsbNcmFunctionalDescriptor");
+ 
+-                        pNcmFunctionalDescr = (PUSB_NCM_CS_FUNCTIONAL_DESCRIPTOR) pCsFuncDescriptor;
++                        if (!m_IsAppleNcm1902 || pNcmFunctionalDescr == nullptr)
++                        {
++                            pNcmFunctionalDescr = (PUSB_NCM_CS_FUNCTIONAL_DESCRIPTOR) pCsFuncDescriptor;
++                        }
+ 
+                         break;
+                     }
+@@ -418,7 +446,10 @@ UsbNcmHostDevice::SelectConfiguration(
+                             STATUS_DEVICE_HARDWARE_ERROR,
+                             "Bad UsbEcmFunctionalDescriptor");
+ 
+-                        pEcmFunctionalDescr = (PUSB_ECM_CS_NET_FUNCTIONAL_DESCRIPTOR) pCsFuncDescriptor;
++                        if (!m_IsAppleNcm1902 || pEcmFunctionalDescr == nullptr)
++                        {
++                            pEcmFunctionalDescr = (PUSB_ECM_CS_NET_FUNCTIONAL_DESCRIPTOR) pCsFuncDescriptor;
++                        }
+ 
+                         break;
+                     }
+@@ -457,17 +488,39 @@ UsbNcmHostDevice::SelectConfiguration(
+         STATUS_DEVICE_HARDWARE_ERROR,
+         "Bad UsbNcm interfaces");
+ 
+-    // select configuration with both interfaces to default setting 0
++    // Select the configuration with both interfaces at default setting 0.
++    // Apple 05AC:1902 has two NCM functions but no IADs, so when this driver
++    // owns the composite parent, every exposed interface must participate in
++    // the configuration selection. Otherwise USB/WDF rejects the partial
++    // request with STATUS_INVALID_PARAMETER.
+     WDF_USB_DEVICE_SELECT_CONFIG_PARAMS configParams;
+-    WDF_USB_INTERFACE_SETTING_PAIR settingPair[2] =
++    WDF_USB_INTERFACE_SETTING_PAIR settingPair[4] =
+     {
+         {m_ControlInterface, 0},
+-        {m_DataInterface , 0}
++        {m_DataInterface , 0},
+     };
++    UCHAR settingPairCount = 2;
++
++    if (m_IsAppleNcm1902)
++    {
++        NCM_RETURN_NT_STATUS_IF_FALSE_MSG(
++            numInterfaces <= ARRAYSIZE(settingPair),
++            STATUS_DEVICE_HARDWARE_ERROR,
++            "Unexpected Apple USB interface count");
++
++        settingPairCount = numInterfaces;
++        for (UCHAR ifIndex = 0; ifIndex < numInterfaces; ifIndex++)
++        {
++            settingPair[ifIndex].UsbInterface = WdfUsbTargetDeviceGetInterface(
++                m_WdfUsbTargetDevice,
++                ifIndex);
++            settingPair[ifIndex].SettingIndex = 0;
++        }
++    }
+ 
+     WDF_USB_DEVICE_SELECT_CONFIG_PARAMS_INIT_MULTIPLE_INTERFACES(
+         &configParams,
+-        ARRAYSIZE(settingPair),
++        settingPairCount,
+         settingPair);
+ 
+     NCM_RETURN_IF_NOT_NT_SUCCESS_MSG(
+@@ -613,11 +666,22 @@ UsbNcmHostDevice::RetrieveInterruptPipe(
+ {
+     PAGED_CODE();
+ 
++    UCHAR pipeCount = WdfUsbInterfaceGetNumConfiguredPipes(m_ControlInterface);
++
++    if (m_IsAppleNcm1902 && pipeCount == 0)
++    {
++        // Apple reports link state out of band and has no CDC notification
++        // endpoint. The bulk interface is still a usable NCM data channel.
++        m_ControlInterruptPipe = nullptr;
++        m_ControlInterruptPipeMaxPacket = 0;
++        return STATUS_SUCCESS;
++    }
++
+     WDF_USB_PIPE_INFORMATION pipeInfo;
+     WDF_USB_PIPE_INFORMATION_INIT(&pipeInfo);
+ 
+     NCM_RETURN_NT_STATUS_IF_FALSE_MSG(
+-        WdfUsbInterfaceGetNumConfiguredPipes(m_ControlInterface) == 1,
++        pipeCount == 1,
+         STATUS_DEVICE_HARDWARE_ERROR,
+         "Bad NCM control interface");
+ 
+@@ -745,7 +809,23 @@ UsbNcmHostDevice::EnterWorkingState(
+         NCM_RETURN_IF_NOT_NT_SUCCESS(RetrieveDataBulkPipes());
+     }
+ 
+-    NCM_RETURN_IF_NOT_NT_SUCCESS(StartPipe(m_ControlInterruptPipe));
++    if (m_ControlInterruptPipe != nullptr)
++    {
++        NCM_RETURN_IF_NOT_NT_SUCCESS(StartPipe(m_ControlInterruptPipe));
++    }
++    else if (m_IsAppleNcm1902)
++    {
++        // Without a notification endpoint Windows will never receive the
++        // standard NETWORK_CONNECTION or CONNECTION_SPEED_CHANGE messages.
++        // Selecting data alternate setting 1 above is our carrier-up event.
++        m_NcmAdapterCallbacks->EvtUsbNcmAdapterSetLinkSpeed(
++            m_NetAdapter,
++            APPLE_NCM_LINK_SPEED_BPS,
++            APPLE_NCM_LINK_SPEED_BPS);
++        m_NcmAdapterCallbacks->EvtUsbNcmAdapterSetLinkState(
++            m_NetAdapter,
++            TRUE);
++    }
+ 
+     return STATUS_SUCCESS;
+ }
+@@ -757,7 +837,16 @@ UsbNcmHostDevice::LeaveWorkingState(
+     void
+ )
+ {
+-    StopPipe(m_ControlInterruptPipe);
++    if (m_ControlInterruptPipe != nullptr)
++    {
++        StopPipe(m_ControlInterruptPipe);
++    }
++    else if (m_IsAppleNcm1902)
++    {
++        m_NcmAdapterCallbacks->EvtUsbNcmAdapterSetLinkState(
++            m_NetAdapter,
++            FALSE);
++    }
+     return STATUS_SUCCESS;
+ }
+ 
+diff --git a/host/device.h b/host/device.h
+index 88e4ea0..4c99481 100644
+--- a/host/device.h
++++ b/host/device.h
+@@ -218,5 +218,8 @@ private:
+     UINT32
+         m_HostSelectedNtbInMaxSize = 0;
+ 
++    BOOLEAN
++        m_IsAppleNcm1902 = FALSE;
++
+     USBNCM_ADAPTER_EVENT_CALLBACKS const *
+         m_NcmAdapterCallbacks;

@@ -2,9 +2,10 @@
 
 This inventory targets Microsoft's
 [`release_21H2`](https://github.com/microsoft/NCM-Driver-for-Windows/tree/release_21H2)
-branch. It is deliberately an implementation specification, not a patch file:
-a binary or a patch that cannot be checked with `git apply --check` is not a
-valid public release artifact.
+branch at commit `48d93213022dce92d518adc60c91fbbb0beab498`. The companion
+[`0001-apple-05ac-1902-device-compatibility.patch`](0001-apple-05ac-1902-device-compatibility.patch)
+passes `git apply --check` against that exact baseline. This page explains the
+intent behind the changes so a reviewer does not need to reverse-engineer it.
 
 ## `host/device.h`
 
@@ -48,6 +49,7 @@ msbuild .\UsbNcmSample.sln /p:Configuration=Release /p:Platform=x64
 signtool verify /kp /v .\AppleNcm1902.sys
 ```
 
-The checked-in project does not yet include that generated patch or a binary
-release. This is intentional: it needs one clean, independently repeatable
-build before a public package can be responsibly tagged.
+The checked-in project includes the generated C/C++ patch but no binary
+release. The INF/package rename remains encoding-sensitive and is documented
+separately. A clean, independently repeatable build is still required before a
+public package can be responsibly tagged.
